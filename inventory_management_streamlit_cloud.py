@@ -8,6 +8,9 @@ from supabase import create_client
 
 st.set_page_config(page_title="Intelligent Business Inventory Management System", page_icon="📦", layout="wide")
 
+# Example suppliers available in the dropdown menus.
+DEFAULT_SUPPLIERS = ["3M", "Uline"]
+
 @st.cache_resource
 def db_client():
     url = st.secrets["SUPABASE_URL"]
@@ -51,10 +54,14 @@ def fetch_categories():
 
 
 def parse_suppliers(value):
-    """Convert a comma/semicolon-separated supplier field into a clean list."""
+    """Convert a supplier string or multiselect list into a clean list."""
     if not value:
         return []
-    return sorted({x.strip() for x in str(value).replace(";", ",").split(",") if x.strip()}, key=str.casefold)
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = str(value).replace(";", ",").split(",")
+    return sorted({str(x).strip() for x in items if str(x).strip()}, key=str.casefold)
 
 
 def fetch_product(product_id):
@@ -186,7 +193,7 @@ def generate_ai_analysis(summary):
     """Generate fresh insights on each Analytics page run; use rules if no API key."""
     prompt = (
         "You are an inventory analyst. Analyze the following live inventory snapshot. "
-        "Write concise, practical insights in Chinese with headings: 总体情况、库存风险、销售/出库趋势、行动建议. "
+        "Write concise, practical insights in English with these headings: Overview, Stock Risks, Outbound Trends, Recommended Actions. "
         "Only use the supplied data. Do not invent causes, forecasts, or numbers. "
         "If data is insufficient, state that clearly. Data: " + str(summary)
     )
@@ -205,7 +212,7 @@ def generate_ai_analysis(summary):
             )
             return response.choices[0].message.content, True
         except Exception as e:
-            return f"AI 服务暂时无法使用：{e}\n\n" + fallback_analytics(summary), False
+            return f"The AI service is temporarily unavailable: {e}\n\n" + fallback_analytics(summary), False
     return fallback_analytics(summary), False
 
 
@@ -213,12 +220,12 @@ def fallback_analytics(summary):
     low = summary["low_stock"]
     top = summary["top_outbound"]
     lines = [
-        "### 总体情况\n"
-        f"目前共有 **{summary['product_count']}** 种产品、库存 **{summary['total_units']}** 件，库存总价值约 **RM {summary['stock_value_rm']:,.2f}**。",
-        "### 库存风险\n" + ("以下产品已达到或低于最低库存：" + "、".join(f"{x['name']}（现有{x['stock']}，最低{x['minimum']}）" for x in low) if low else "目前没有产品低于最低库存线。"),
-        "### 销售/出库趋势\n"
-        f"最近 30 天总出库量为 **{summary['outbound_30d']}** 件。" + ("出库较多的产品：" + "、".join(f"{n}（{q}件）" for n, q in top) + "。" if top else "目前没有最近 30 天的出库记录。"),
-        "### 行动建议\n" + ("优先检查低库存产品，并根据补货建议安排采购。" if low else "继续监控库存变化，并定期检查高出库量产品。"),
+        "### Overview\n"
+        f"There are **{summary['product_count']}** product types, **{summary['total_units']}** units in stock, and a total stock value of approximately **RM {summary['stock_value_rm']:,.2f}**.",
+        "### Stock Risks\n" + ("Products at or below minimum stock: " + ", ".join(f"{x['name']} (current: {x['stock']}, minimum: {x['minimum']})" for x in low) if low else "No products are currently at or below the minimum stock level."),
+        "### Outbound Trends\n"
+        f"Total outbound quantity over the last 30 days: **{summary['outbound_30d']}** units. " + ("Top outgoing products: " + ", ".join(f"{n} ({q} units)" for n, q in top) + "." if top else "There are no outbound transactions in the last 30 days."),
+        "### Recommended Actions\n" + ("Review low-stock products first and arrange purchases based on the restocking recommendations." if low else "Continue monitoring stock levels and review products with higher outbound quantities regularly."),
     ]
     return "\n\n".join(lines)
 
@@ -287,7 +294,7 @@ def product_page():
         st.info("No products match your search.")
 
     if user["role"] != "admin":
-        st.info("Staff 权限：仅可查看产品资料。新增、编辑和删除产品仅限 Admin。")
+        st.info("Staff access: You can view product information only. Adding, editing, and deleting products are restricted to Admin users.")
         return
 
     action = st.radio("Product action", ["Add product", "Edit product", "Delete product"], horizontal=True, key="product_action")
@@ -299,7 +306,12 @@ def product_page():
             quantity = c1.number_input("Initial stock", min_value=0, step=1, value=0)
             min_stock = c2.number_input("Minimum stock", min_value=0, step=1, value=5)
             price = c1.number_input("Unit price (RM)", min_value=0.0, step=1.0, format="%.2f")
-            suppliers = st.text_input("Suppliers (separate multiple names with commas)", placeholder="e.g. ABC Trading, XYZ Supply")
+            suppliers = st.multiselect(
+                "Suppliers",
+                options=DEFAULT_SUPPLIERS,
+                default=DEFAULT_SUPPLIERS,
+                help="Select one or both example suppliers for this product."
+            )
             submit = st.form_submit_button("Add product", type="primary")
         if submit:
             if not name.strip() or not category_new.strip():
@@ -327,7 +339,14 @@ def product_page():
                 c1.number_input("Current stock (read-only)", min_value=0, value=int(p["quantity"]), disabled=True)
                 new_min = c2.number_input("Minimum stock", min_value=0, value=int(p["min_stock"]), step=1)
                 new_price = c1.number_input("Unit price (RM)", min_value=0.0, value=float(p["price"]), step=1.0, format="%.2f")
-                new_suppliers = st.text_input("Suppliers (separate multiple names with commas)", value=p.get("suppliers") or "")
+                saved_suppliers = parse_suppliers(p.get("suppliers"))
+                supplier_defaults = [name for name in saved_suppliers if name in DEFAULT_SUPPLIERS]
+                new_suppliers = st.multiselect(
+                    "Suppliers",
+                    options=DEFAULT_SUPPLIERS,
+                    default=supplier_defaults,
+                    help="Select the suppliers associated with this product."
+                )
                 save = st.form_submit_button("Save changes", type="primary")
             if save:
                 update_product(p["id"], new_name, new_category, int(new_min), float(new_price), new_suppliers)
@@ -358,32 +377,26 @@ def stock_page():
     # Keep product and supplier selectors outside the form so supplier options
     # update immediately when a different product is selected.
     selected = st.selectbox("Product", list(opts.keys()), key="stock_product_select")
-    supplier_options = parse_suppliers(opts[selected].get("suppliers"))
-    if supplier_options:
-        supplier = st.selectbox("Supplier", supplier_options, key="stock_supplier_select")
-    else:
-        supplier = st.text_input("Supplier", placeholder="No supplier saved for this product; enter supplier", key="stock_supplier_manual")
+    supplier_options = parse_suppliers(opts[selected].get("suppliers")) or DEFAULT_SUPPLIERS
+    supplier = st.selectbox("Supplier", supplier_options, key="stock_supplier_select")
     with st.form("stock_movement_form", clear_on_submit=True):
         movement = st.radio("Movement type", ["Incoming (IN)", "Outgoing (OUT)"], horizontal=True)
         qty = st.number_input("Quantity", min_value=1, step=1, value=1)
         submit = st.form_submit_button("Submit stock change", type="primary")
     if submit:
         kind = "IN" if movement.startswith("Incoming") else "OUT"
-        if not supplier or not supplier.strip():
-            st.error("Please select or enter a supplier.")
-        else:
-            try:
-                record_stock(opts[selected]["id"], kind, int(qty), supplier, st.session_state.user["username"])
-                st.success("Stock movement recorded.")
-                st.rerun()
-            except Exception as e:
-                st.error(str(e))
+        try:
+            record_stock(opts[selected]["id"], kind, int(qty), supplier, st.session_state.user["username"])
+            st.success("Stock movement recorded.")
+            st.rerun()
+        except Exception as e:
+            st.error(str(e))
 
 
 def analytics_page():
     st.subheader("Inventory Analytics")
-    st.caption("AI 分析会在打开此页面或点击刷新时，根据数据库中的最新库存与最近 30 天出库记录重新生成。")
-    if st.button("🔄 重新分析最新数据", type="primary", key="refresh_ai_analytics"):
+    st.caption("AI analysis is regenerated using the latest inventory data and outbound transactions from the last 30 days whenever this page is opened or refreshed.")
+    if st.button("🔄 Refresh Latest Analysis", type="primary", key="refresh_ai_analytics"):
         st.rerun()
     summary = build_analytics_summary()
     m1, m2, m3 = st.columns(3)
@@ -397,21 +410,21 @@ def analytics_page():
         left.bar_chart(df.set_index("Category"))
         right.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.info("最近 30 天没有出库分析数据。")
+        st.info("There is no outbound analysis data for the last 30 days.")
     st.markdown("#### Most frequently outgoing products (last 30 days)")
     if recent:
         st.dataframe(pd.DataFrame(recent).rename(columns={"product_name": "Product", "total": "Outbound quantity"}), use_container_width=True, hide_index=True)
     else:
         st.info("No outgoing transactions in the last 30 days.")
     st.divider()
-    st.markdown("### 🤖 AI 实时库存分析")
+    st.markdown("### 🤖 AI Inventory Analysis")
     analysis, used_ai = generate_ai_analysis(summary)
-    st.caption("OpenAI AI analysis" if used_ai else "规则分析模式（如需调用 AI，请在 Streamlit Secrets 配置 OPENAI_API_KEY）")
+    st.caption("OpenAI AI analysis" if used_ai else "Rule-based analysis mode (add OPENAI_API_KEY to Streamlit Secrets to enable AI analysis).")
     st.markdown(analysis)
 
 
 def restock_page():
-    st.subheader("补货建议")
+    st.subheader("Restocking Recommendations")
     st.info("Target Stock = max(Minimum Stock × 2, Average Daily Outbound × 14 days).")
     rows = restock_data()
     if rows:
@@ -476,7 +489,7 @@ def main():
         login_screen()
         return
 
-    pages = {"dashboard":"📊 Dashboard", "products":"📦 Product Management", "stock":"🔁 Inbound / Outbound", "analytics":"📈 Analytics", "restock":"🧠 补货建议", "history":"🧾 Transaction History", "password":"🔐 Change Password"}
+    pages = {"dashboard":"📊 Dashboard", "products":"📦 Product Management", "stock":"🔁 Inbound / Outbound", "analytics":"📈 Analytics", "restock":"🧠 Restocking Recommendations", "history":"🧾 Transaction History", "password":"🔐 Change Password"}
     with st.sidebar:
         st.markdown("## 📦 Inventory System")
         st.caption(f"Signed in as **{st.session_state.user['username']}**")
@@ -486,9 +499,11 @@ def main():
         st.divider()
         if st.button("🔄 Refresh data", use_container_width=True):
             st.rerun()
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("🚪 Logout", use_container_width=True, key="logout_button"):
+            # page_nav belongs to the st.radio widget above. Do not assign to its
+            # session-state key in the same run after the widget is instantiated.
+            # The login screen is shown on rerun; the next login resets page_nav.
             st.session_state.user = None
-            st.session_state.page_nav = "dashboard"
             st.rerun()
 
     st.title(pages[page])
